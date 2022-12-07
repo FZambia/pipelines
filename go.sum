@@ -1,3 +1,5 @@
+github.com/FZambia/rueidis v0.0.0-20221207163401-960c08e99a41 h1:hU3XJRlbxSA4Eh+mqhLAlLYWz6v+2otvkvwJVVgkn38=
+github.com/FZambia/rueidis v0.0.0-20221207163401-960c08e99a41/go.mod h1:LiKWMM/QnILwRfDZIhSIXi4vQqZ/UZy4+/aNkSCt8XA=
 github.com/andres-erbsen/clock v0.0.0-20160526145045-9e14626cd129 h1:MzBOUgng9orim59UnfUTLRjMpd09C5uEVQ6RPGeCaVI=
 github.com/andres-erbsen/clock v0.0.0-20160526145045-9e14626cd129/go.mod h1:rFgpPQZYZ8vdbc+48xibu8ALc3yeyd64IhHS+PU6Yyg=
 github.com/cespare/xxhash/v2 v2.1.2 h1:YRXhKfTDauu4ajMg1TPgFO5jnlC2HCbmLXMcTG5cbYE=

@@ -9,12 +9,12 @@ import (
 	"go.uber.org/ratelimit"
 )
 
-const useLimiter = true
+const (
+	parallelism = 1024
+)
 
 func getLimiter() ratelimit.Limiter {
-	if !useLimiter {
-		return ratelimit.NewUnlimited()
-	}
+	//return ratelimit.NewUnlimited()
 	return ratelimit.New(100, ratelimit.Per(time.Millisecond))
 }
 

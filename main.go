@@ -18,8 +18,7 @@ import (
 const (
 	maxCommandsInPipeline = 512
 	numPipelineWorkers    = 1
-	parallelism           = 128
-	rpsLimit              = 10000
+	mainParallelism       = 1024
 )
 
 func rueidisClient() rueidis.Client {
@@ -27,7 +26,7 @@ func rueidisClient() rueidis.Client {
 		InitAddress:  []string{":6379"},
 		DisableCache: true,
 		GetWriterEachConn: func(writer io.Writer) (*bufio.Writer, func()) {
-			mlw := &maxLatencyWriter{dst: bufio.NewWriterSize(writer, 1<<19), latency: time.Millisecond / 2}
+			mlw := newDelayWriter(bufio.NewWriterSize(writer, 1<<19), time.Millisecond)
 			w := bufio.NewWriterSize(mlw, 1<<19)
 			return w, func() { mlw.close() }
 		},
@@ -153,13 +152,8 @@ func (s *sender) runPipelineRoutineGoredis() {
 	}
 }
 
-var count int64
-var prev int64
-
-func runRedigo() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
+func genEvents(ctx context.Context) chan struct{} {
+	const rpsLimit = 10000
 	ch := make(chan struct{}, rpsLimit)
 	go func() {
 		for {
@@ -171,16 +165,26 @@ func runRedigo() {
 			}
 		}
 	}()
+	return ch
+}
+
+var count int64
+var prev int64
+
+func runRedigo() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch := genEvents(ctx)
 
 	pool := redigoPool()
 	defer func() { _ = pool.Close() }()
 
 	sender := newSender(pool, nil)
 
-	for i := 0; i < parallelism; i++ {
+	for i := 0; i < mainParallelism; i++ {
 		go func() {
 			for {
-				//_ = limiter.Wait(context.Background())
 				select {
 				case <-ctx.Done():
 					return
@@ -204,32 +208,16 @@ func runGoredis() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ch := make(chan struct{}, rpsLimit)
-	go func() {
-		for {
-			time.Sleep(time.Second / rpsLimit)
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- struct{}{}:
-			}
-		}
-	}()
+	ch := genEvents(ctx)
 
 	client := goredisClient()
 	defer func() { _ = client.Close() }()
 
 	sender := newSender(nil, client)
 
-	for i := 0; i < parallelism; i++ {
+	for i := 0; i < mainParallelism; i++ {
 		go func() {
 			for {
-				//_ = limiter.Wait(context.Background())
-				//select {
-				//case <-ctx.Done():
-				//	return
-				//case <-ch:
-				//}
 				select {
 				case <-ctx.Done():
 					return
@@ -250,34 +238,17 @@ func runGoredis() {
 }
 
 func runRueidis() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	ch := make(chan struct{}, rpsLimit)
-	go func() {
-		for {
-			time.Sleep(time.Second / rpsLimit)
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- struct{}{}:
-			}
-		}
-	}()
+	ch := genEvents(ctx)
 
 	client := rueidisClient()
 	defer client.Close()
 
-	for i := 0; i < parallelism; i++ {
+	for i := 0; i < mainParallelism; i++ {
 		go func() {
 			for {
-				//_ = limiter.Wait(context.Background())
-				//select {
-				//case <-ctx.Done():
-				//	return
-				//case <-ch:
-				//}
-				//_ = limiter.Wait(context.Background())
 				select {
 				case <-ctx.Done():
 					return
@@ -287,7 +258,12 @@ func runRueidis() {
 				cmd := client.B().Publish().Channel("pipelines").Message("test").Build()
 				res := client.Do(context.Background(), cmd)
 				if res.Error() != nil {
-					log.Fatal(res.Error())
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						log.Fatal(res.Error())
+					}
 				}
 				atomic.AddInt64(&count, 1)
 				time.Sleep(time.Millisecond - time.Since(started))
@@ -322,44 +298,44 @@ type writeFlusher interface {
 }
 
 // https://github.com/caddyserver/caddy/blob/c94f5bb7dd3c98d6573c44f06d99c7252911a9fa/modules/caddyhttp/reverseproxy/streaming.go#L88-L124
-type maxLatencyWriter struct {
-	dst     writeFlusher
-	latency time.Duration // non-zero; negative means to flush immediately
+type delayWriter struct {
+	dst   writeFlusher
+	delay time.Duration // zero means to flush immediately
 
-	mu           sync.Mutex // protects t, flushPending, and dst.Flush
-	t            *time.Timer
-	flushPending bool
+	mu           sync.Mutex // protects tm, flushPending, and dst.Flush
+	tm           *time.Timer
 	err          error
+	flushPending bool
 }
 
-func newMaxLatencyWriter(dst writeFlusher, latency time.Duration) *maxLatencyWriter {
-	return &maxLatencyWriter{dst: dst, latency: latency}
+func newDelayWriter(dst writeFlusher, delay time.Duration) *delayWriter {
+	return &delayWriter{dst: dst, delay: delay}
 }
 
-func (m *maxLatencyWriter) Write(p []byte) (n int, err error) {
+func (m *delayWriter) Write(p []byte) (n int, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.err != nil {
 		return 0, err
 	}
 	n, err = m.dst.Write(p)
-	if m.latency < 0 {
+	if m.delay <= 0 {
 		err = m.dst.Flush()
 		return
 	}
 	if m.flushPending {
 		return
 	}
-	if m.t == nil {
-		m.t = time.AfterFunc(m.latency, m.delayedFlush)
+	if m.tm == nil {
+		m.tm = time.AfterFunc(m.delay, m.delayedFlush)
 	} else {
-		m.t.Reset(m.latency)
+		m.tm.Reset(m.delay)
 	}
 	m.flushPending = true
 	return
 }
 
-func (m *maxLatencyWriter) delayedFlush() {
+func (m *delayWriter) delayedFlush() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.flushPending { // if stop was called but AfterFunc already started this goroutine
@@ -372,11 +348,11 @@ func (m *maxLatencyWriter) delayedFlush() {
 	m.flushPending = false
 }
 
-func (m *maxLatencyWriter) close() {
+func (m *delayWriter) close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.flushPending = false
-	if m.t != nil {
-		m.t.Stop()
+	if m.tm != nil {
+		m.tm.Stop()
 	}
 }
