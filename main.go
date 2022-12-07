@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -18,18 +17,18 @@ import (
 const (
 	maxCommandsInPipeline = 512
 	numPipelineWorkers    = 1
-	mainParallelism       = 1024
+	mainParallelism       = 128
 )
 
 func rueidisClient() rueidis.Client {
 	client, err := rueidis.NewClient(rueidis.ClientOption{
 		InitAddress:  []string{":6379"},
 		DisableCache: true,
-		GetWriterEachConn: func(writer io.Writer) (*bufio.Writer, func()) {
-			mlw := newDelayWriter(bufio.NewWriterSize(writer, 1<<19), time.Millisecond)
-			w := bufio.NewWriterSize(mlw, 1<<19)
-			return w, func() { mlw.close() }
-		},
+		//GetWriterEachConn: func(writer io.Writer) (*bufio.Writer, func()) {
+		//	mlw := newDelayWriter(bufio.NewWriterSize(writer, 1<<19), time.Millisecond)
+		//	w := bufio.NewWriterSize(mlw, 1<<19)
+		//	return w, func() { mlw.close() }
+		//},
 	})
 	if err != nil {
 		log.Fatal(err)

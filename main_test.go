@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	parallelism = 1024
+	parallelism = 128
 )
 
 func getLimiter() ratelimit.Limiter {
