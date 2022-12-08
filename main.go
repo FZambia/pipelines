@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,22 +17,49 @@ import (
 	"github.com/rueian/rueidis"
 )
 
-const (
+var (
 	maxCommandsInPipeline = 512
 	numPipelineWorkers    = 1
-	mainParallelism       = 128
+	parallelism           = 128
 )
 
+func init() {
+	if os.Getenv("PIPE_PARALLELISM") != "" {
+		var err error
+		parallelism, err = strconv.Atoi(os.Getenv("PIPE_PARALLELISM"))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	if os.Getenv("PIPE_WORKERS") != "" {
+		var err error
+		numPipelineWorkers, err = strconv.Atoi(os.Getenv("PIPE_WORKERS"))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	if os.Getenv("PIPE_MAX_COMMANDS") != "" {
+		var err error
+		maxCommandsInPipeline, err = strconv.Atoi(os.Getenv("PIPE_MAX_COMMANDS"))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func rueidisClient() rueidis.Client {
-	client, err := rueidis.NewClient(rueidis.ClientOption{
+	options := rueidis.ClientOption{
 		InitAddress:  []string{":6379"},
 		DisableCache: true,
-		//GetWriterEachConn: func(writer io.Writer) (*bufio.Writer, func()) {
-		//	mlw := newDelayWriter(bufio.NewWriterSize(writer, 1<<19), time.Millisecond)
-		//	w := bufio.NewWriterSize(mlw, 1<<19)
-		//	return w, func() { mlw.close() }
-		//},
-	})
+	}
+	if os.Getenv("PIPE_DELAYED") != "" {
+		options.GetWriterEachConn = func(writer io.Writer) (*bufio.Writer, func()) {
+			mlw := newDelayWriter(bufio.NewWriterSize(writer, 1<<19), time.Millisecond)
+			w := bufio.NewWriterSize(mlw, 1<<19)
+			return w, func() { mlw.close() }
+		}
+	}
+	client, err := rueidis.NewClient(options)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -181,7 +211,7 @@ func runRedigo() {
 
 	sender := newSender(pool, nil)
 
-	for i := 0; i < mainParallelism; i++ {
+	for i := 0; i < parallelism; i++ {
 		go func() {
 			for {
 				select {
@@ -214,7 +244,7 @@ func runGoredis() {
 
 	sender := newSender(nil, client)
 
-	for i := 0; i < mainParallelism; i++ {
+	for i := 0; i < parallelism; i++ {
 		go func() {
 			for {
 				select {
@@ -245,7 +275,7 @@ func runRueidis() {
 	client := rueidisClient()
 	defer client.Close()
 
-	for i := 0; i < mainParallelism; i++ {
+	for i := 0; i < parallelism; i++ {
 		go func() {
 			for {
 				select {

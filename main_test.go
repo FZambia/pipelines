@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,13 +10,11 @@ import (
 	"go.uber.org/ratelimit"
 )
 
-const (
-	parallelism = 128
-)
-
 func getLimiter() ratelimit.Limiter {
-	//return ratelimit.NewUnlimited()
-	return ratelimit.New(100, ratelimit.Per(time.Millisecond))
+	if os.Getenv("PIPE_LIMITED") != "" {
+		return ratelimit.New(100, ratelimit.Per(time.Millisecond))
+	}
+	return ratelimit.NewUnlimited()
 }
 
 func BenchmarkRedigo(b *testing.B) {
