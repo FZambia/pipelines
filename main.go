@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -49,15 +48,9 @@ func init() {
 
 func rueidisClient() rueidis.Client {
 	options := rueidis.ClientOption{
-		InitAddress:  []string{":6379"},
-		DisableCache: true,
-	}
-	if os.Getenv("PIPE_DELAYED") != "" {
-		options.GetWriterEachConn = func(writer io.Writer) (*bufio.Writer, func()) {
-			mlw := newDelayWriter(bufio.NewWriterSize(writer, 1<<19), time.Millisecond)
-			w := bufio.NewWriterSize(mlw, 1<<19)
-			return w, func() { mlw.close() }
-		}
+		InitAddress:   []string{":6379"},
+		DisableCache:  true,
+		MaxFlushDelay: 20 * time.Microsecond,
 	}
 	client, err := rueidis.NewClient(options)
 	if err != nil {

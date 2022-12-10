@@ -2,12 +2,10 @@ module github.com/FZambia/pipelines
 
 go 1.19
 
-replace github.com/rueian/rueidis => github.com/FZambia/rueidis v0.0.0-20221207163401-960c08e99a41
-
 require (
 	github.com/go-redis/redis/v9 v9.0.0-rc.2
 	github.com/gomodule/redigo v1.8.9
-	github.com/rueian/rueidis v0.0.88
+	github.com/rueian/rueidis v0.0.89
 	go.uber.org/ratelimit v0.2.0
 )
 
