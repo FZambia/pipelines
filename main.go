@@ -3,12 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	goredis "github.com/go-redis/redis/v9"
@@ -17,9 +14,10 @@ import (
 )
 
 var (
-	maxCommandsInPipeline = 512
-	numPipelineWorkers    = 1
-	parallelism           = 128
+	maxCommandsInPipeline     = 512
+	numPipelineWorkers        = 1
+	parallelism               = 128
+	maxFlushDelayMicroseconds = 0
 )
 
 func init() {
@@ -44,13 +42,24 @@ func init() {
 			log.Fatal(err)
 		}
 	}
+	if os.Getenv("PIPE_MAX_FLUSH_DELAY") != "" {
+		var err error
+		maxFlushDelayMicroseconds, err = strconv.Atoi(os.Getenv("PIPE_MAX_FLUSH_DELAY"))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	fmt.Printf("Parallelism: %d\n", parallelism)
+	fmt.Printf("Num pipeline workers: %d\n", numPipelineWorkers)
+	fmt.Printf("Rueidis max flush delay: %s\n", time.Duration(maxFlushDelayMicroseconds)*time.Microsecond)
 }
 
 func rueidisClient() rueidis.Client {
 	options := rueidis.ClientOption{
 		InitAddress:   []string{":6379"},
 		DisableCache:  true,
-		MaxFlushDelay: 20 * time.Microsecond,
+		MaxFlushDelay: time.Duration(maxFlushDelayMicroseconds) * time.Microsecond,
 	}
 	client, err := rueidis.NewClient(options)
 	if err != nil {
@@ -171,210 +180,5 @@ func (s *sender) runPipelineRoutineGoredis() {
 				commands[i].errCh <- err
 			}
 		}
-	}
-}
-
-func genEvents(ctx context.Context) chan struct{} {
-	const rpsLimit = 10000
-	ch := make(chan struct{}, rpsLimit)
-	go func() {
-		for {
-			time.Sleep(time.Second / rpsLimit)
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- struct{}{}:
-			}
-		}
-	}()
-	return ch
-}
-
-var count int64
-var prev int64
-
-func runRedigo() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	ch := genEvents(ctx)
-
-	pool := redigoPool()
-	defer func() { _ = pool.Close() }()
-
-	sender := newSender(pool, nil)
-
-	for i := 0; i < parallelism; i++ {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ch:
-				}
-				started := time.Now()
-				err := sender.send()
-				if err != nil {
-					log.Fatal(err)
-				}
-				atomic.AddInt64(&count, 1)
-				time.Sleep(time.Millisecond - time.Since(started))
-			}
-		}()
-	}
-
-	<-ctx.Done()
-}
-
-func runGoredis() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	ch := genEvents(ctx)
-
-	client := goredisClient()
-	defer func() { _ = client.Close() }()
-
-	sender := newSender(nil, client)
-
-	for i := 0; i < parallelism; i++ {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ch:
-				}
-				started := time.Now()
-				err := sender.send()
-				if err != nil {
-					log.Fatal(err)
-				}
-				atomic.AddInt64(&count, 1)
-				time.Sleep(time.Millisecond - time.Since(started))
-			}
-		}()
-	}
-
-	<-ctx.Done()
-}
-
-func runRueidis() {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	ch := genEvents(ctx)
-
-	client := rueidisClient()
-	defer client.Close()
-
-	for i := 0; i < parallelism; i++ {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ch:
-				}
-				started := time.Now()
-				cmd := client.B().Publish().Channel("pipelines").Message("test").Build()
-				res := client.Do(context.Background(), cmd)
-				if res.Error() != nil {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						log.Fatal(res.Error())
-					}
-				}
-				atomic.AddInt64(&count, 1)
-				time.Sleep(time.Millisecond - time.Since(started))
-			}
-		}()
-	}
-
-	<-ctx.Done()
-}
-
-func main() {
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			val := atomic.LoadInt64(&count)
-			fmt.Println(val - atomic.LoadInt64(&prev))
-			atomic.StoreInt64(&prev, val)
-		}
-	}()
-
-	log.Println("run redigo")
-	runRedigo()
-	log.Println("run goredis")
-	runGoredis()
-	log.Println("run rueidis")
-	runRueidis()
-}
-
-type writeFlusher interface {
-	io.Writer
-	Flush() error
-}
-
-// https://github.com/caddyserver/caddy/blob/c94f5bb7dd3c98d6573c44f06d99c7252911a9fa/modules/caddyhttp/reverseproxy/streaming.go#L88-L124
-type delayWriter struct {
-	dst   writeFlusher
-	delay time.Duration // zero means to flush immediately
-
-	mu           sync.Mutex // protects tm, flushPending, and dst.Flush
-	tm           *time.Timer
-	err          error
-	flushPending bool
-}
-
-func newDelayWriter(dst writeFlusher, delay time.Duration) *delayWriter {
-	return &delayWriter{dst: dst, delay: delay}
-}
-
-func (m *delayWriter) Write(p []byte) (n int, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.err != nil {
-		return 0, err
-	}
-	n, err = m.dst.Write(p)
-	if m.delay <= 0 {
-		err = m.dst.Flush()
-		return
-	}
-	if m.flushPending {
-		return
-	}
-	if m.tm == nil {
-		m.tm = time.AfterFunc(m.delay, m.delayedFlush)
-	} else {
-		m.tm.Reset(m.delay)
-	}
-	m.flushPending = true
-	return
-}
-
-func (m *delayWriter) delayedFlush() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.flushPending { // if stop was called but AfterFunc already started this goroutine
-		return
-	}
-	err := m.dst.Flush()
-	if err != nil {
-		m.err = err
-	}
-	m.flushPending = false
-}
-
-func (m *delayWriter) close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.flushPending = false
-	if m.tm != nil {
-		m.tm.Stop()
 	}
 }

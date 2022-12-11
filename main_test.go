@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,10 +9,8 @@ import (
 )
 
 func getLimiter() ratelimit.Limiter {
-	if os.Getenv("PIPE_LIMITED") != "" {
-		return ratelimit.New(100, ratelimit.Per(time.Millisecond))
-	}
-	return ratelimit.NewUnlimited()
+	//return ratelimit.NewUnlimited()
+	return ratelimit.New(100, ratelimit.Per(time.Millisecond))
 }
 
 func BenchmarkRedigo(b *testing.B) {
@@ -35,7 +31,6 @@ func BenchmarkRedigo(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			atomic.AddInt64(&count, 1)
 		}
 	})
 }
@@ -58,7 +53,6 @@ func BenchmarkGoredis(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			atomic.AddInt64(&count, 1)
 		}
 	})
 }
@@ -72,6 +66,7 @@ func BenchmarkRueidis(b *testing.B) {
 	b.ResetTimer()
 	b.SetParallelism(parallelism)
 	b.ReportAllocs()
+
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			_ = limiter.Take()
@@ -80,7 +75,6 @@ func BenchmarkRueidis(b *testing.B) {
 			if res.Error() != nil {
 				b.Fatal(res.Error())
 			}
-			atomic.AddInt64(&count, 1)
 		}
 	})
 }
