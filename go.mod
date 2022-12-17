@@ -1,11 +1,11 @@
 module github.com/FZambia/pipelines
 
-go 1.19
+go 1.18
 
 require (
 	github.com/go-redis/redis/v9 v9.0.0-rc.2
 	github.com/gomodule/redigo v1.8.9
-	github.com/rueian/rueidis v0.0.89
+	github.com/rueian/rueidis v0.0.90
 	go.uber.org/ratelimit v0.2.0
 )
 
